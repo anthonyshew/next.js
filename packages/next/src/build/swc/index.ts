@@ -9,6 +9,7 @@ import { eventSwcLoadFailure } from '../../telemetry/events/swc-load-failure'
 import { patchIncorrectLockfile } from '../../lib/patch-incorrect-lockfile'
 import { downloadWasmSwc } from '../../lib/download-wasm-swc'
 import { spawn } from 'child_process'
+import { string } from 'zod'
 
 const nextVersion = process.env.__NEXT_VERSION as string
 
@@ -218,7 +219,9 @@ function logLoadFailure(attempts: any, triedWasm = false) {
     })
 }
 
-interface RoutesOptions {}
+interface RoutesOptions {
+  pageExtensions: string[]
+}
 
 interface Project {
   routesSubscribe(
@@ -229,7 +232,6 @@ interface Project {
 type Route =
   | {
       type: 'conflict'
-      routes: Route[]
     }
   | {
       type: 'app-page'
@@ -246,7 +248,7 @@ type Route =
       dataEndpoint: Endpoint
     }
   | {
-      type: 'api'
+      type: 'page-api'
       endpoint: Endpoint
     }
 
@@ -267,10 +269,18 @@ interface WrittenEndpoint {
 }
 
 function bindingToApi(binding: any, wasm: boolean) {
-  console.log(binding)
   type NativeFunction<T> = (
     callback: (err: Error, value: T) => void
   ) => Promise<{ __napiType: 'RootTask' }>
+  /**
+   * Utility function to ensure all variants of an enum are handled.
+   */
+  function invariant(
+    never: never,
+    computeMessage: (arg: any) => string
+  ): never {
+    throw new Error(`Invariant: ${computeMessage(never)}`)
+  }
   /// Calls a native function and streams the result. All values will be preserved, potentially buffered if consumed slower than produced.
   function stream<T>(
     nativeFunction: NativeFunction<T>
@@ -405,7 +415,35 @@ function bindingToApi(binding: any, wasm: boolean) {
     }
 
     routesSubscribe(options: RoutesOptions) {
-      const subscription = subscribe(async (callback) =>
+      type NapiEndpoint = { __napiType: 'Endpoint' }
+
+      type NapiRoute = {
+        pathname: string
+      } & (
+        | {
+            type: 'page'
+            htmlEndpoint: NapiEndpoint
+            dataEndpoint: NapiEndpoint
+          }
+        | {
+            type: 'page-api'
+            endpoint: NapiEndpoint
+          }
+        | {
+            type: 'app-page'
+            htmlEndpoint: NapiEndpoint
+            rscEndpoint: NapiEndpoint
+          }
+        | {
+            type: 'app-route'
+            endpoint: NapiEndpoint
+          }
+        | {
+            type: 'conflict'
+          }
+      )
+
+      const subscription = subscribe<NapiRoute[]>(async (callback) =>
         binding.projectRoutesSubscribe(
           await this._nativeProject,
           options,
@@ -413,14 +451,56 @@ function bindingToApi(binding: any, wasm: boolean) {
         )
       )
       return (async function* () {
-        for await (const entryPoints of subscription) {
-          yield entryPoints
+        for await (const routes of subscription) {
+          const map = new Map()
+          for (const { pathname, ...nativeRoute } of routes) {
+            let route: Route
+            switch (nativeRoute.type) {
+              case 'page':
+                route = {
+                  type: 'page',
+                  htmlEndpoint: new EndpointImpl(nativeRoute.htmlEndpoint),
+                  dataEndpoint: new EndpointImpl(nativeRoute.dataEndpoint),
+                }
+                break
+              case 'page-api':
+                route = {
+                  type: 'page-api',
+                  endpoint: new EndpointImpl(nativeRoute.endpoint),
+                }
+                break
+              case 'app-page':
+                route = {
+                  type: 'app-page',
+                  htmlEndpoint: new EndpointImpl(nativeRoute.htmlEndpoint),
+                  rscEndpoint: new EndpointImpl(nativeRoute.rscEndpoint),
+                }
+                break
+              case 'app-route':
+                route = {
+                  type: 'app-route',
+                  endpoint: new EndpointImpl(nativeRoute.endpoint),
+                }
+                break
+              case 'conflict':
+                route = {
+                  type: 'conflict',
+                }
+                break
+              default:
+                invariant(
+                  nativeRoute,
+                  () => `Unknown route type: ${(nativeRoute as any).type}`
+                )
+                break
+            }
+            map.set(pathname, route)
+          }
+          yield map
         }
       })()
     }
   }
-
-  class EntryPointImpl {}
 
   class EndpointImpl implements Endpoint {
     private _nativeEndpoint: { __napiType: 'Endpoint' }
@@ -434,7 +514,7 @@ function bindingToApi(binding: any, wasm: boolean) {
     }
 
     async changed(): Promise<AsyncIterableIterator<void>> {
-      const iter = subscribe(async (callback) =>
+      const iter = subscribe<void>(async (callback) =>
         binding.endpointChangedSubscribe(await this._nativeEndpoint, callback)
       )
       await iter.next()
@@ -443,8 +523,9 @@ function bindingToApi(binding: any, wasm: boolean) {
   }
 
   async function createProject(options: any) {
-    nativeProject = await binding.projectNew(options, 4 * 1024 * 1024 * 1024)
-    return new ProjectImpl(nativeProject)
+    return new ProjectImpl(
+      await binding.projectNew(options, 4 * 1024 * 1024 * 1024)
+    )
   }
 
   return createProject
@@ -828,7 +909,7 @@ function loadNative(isCustomTurbopack = false) {
             )
           },
         },
-        Project: bindingToApi(bindings, false),
+        createProject: bindingToApi(bindings, false),
       },
       mdx: {
         compile: (src: string, options: any) =>

@@ -4,13 +4,13 @@ use anyhow::{anyhow, Result};
 use napi::{
     bindgen_prelude::{External, ToNapiValue},
     threadsafe_function::{ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode},
-    CallContext, JsFunction, Status,
+    JsFunction, Status,
 };
 use next_api::{
     project::{ProjectOptions, ProjectVc, RoutesOptions},
-    route::{Endpoint, EndpointVc, RoutesReadRef},
+    route::{Endpoint, EndpointVc, Route, RouteReadRef, WrittenEndpoint},
 };
-use turbo_tasks::{NothingVc, TaskId, TurboTasks};
+use turbo_tasks::{NothingVc, TaskId, TryJoinIterExt, TurboTasks};
 use turbopack_binding::{
     turbo::tasks_memory::MemoryBackend, turbopack::core::error::PrettyPrintError,
 };
@@ -88,6 +88,71 @@ pub async fn project_new(options: NapiProjectOptions) -> napi::Result<External<V
     ))
 }
 
+#[napi(object)]
+#[derive(Default)]
+struct NapiRoute {
+    pub pathname: String,
+    pub r#type: &'static str,
+    pub endpoint: Option<External<VcArc<EndpointVc>>>,
+    pub html_endpoint: Option<External<VcArc<EndpointVc>>>,
+    pub rsc_endpoint: Option<External<VcArc<EndpointVc>>>,
+    pub data_endpoint: Option<External<VcArc<EndpointVc>>>,
+}
+
+impl NapiRoute {
+    fn from_route(
+        pathname: String,
+        value: &RouteReadRef,
+        turbo_tasks: &Arc<TurboTasks<MemoryBackend>>,
+    ) -> Self {
+        let convert_endpoint = |endpoint: EndpointVc| {
+            Some(External::new(VcArc {
+                turbo_tasks: turbo_tasks.clone(),
+                vc: endpoint,
+            }))
+        };
+        match &**value {
+            Route::Page {
+                html_endpoint,
+                data_endpoint,
+            } => NapiRoute {
+                pathname,
+                r#type: "page",
+                html_endpoint: convert_endpoint(html_endpoint.clone()),
+                data_endpoint: convert_endpoint(data_endpoint.clone()),
+                ..Default::default()
+            },
+            Route::PageApi { endpoint } => NapiRoute {
+                pathname,
+                r#type: "page-api",
+                endpoint: convert_endpoint(endpoint.clone()),
+                ..Default::default()
+            },
+            Route::AppPage {
+                html_endpoint,
+                rsc_endpoint,
+            } => NapiRoute {
+                pathname,
+                r#type: "app-page",
+                html_endpoint: convert_endpoint(html_endpoint.clone()),
+                rsc_endpoint: convert_endpoint(rsc_endpoint.clone()),
+                ..Default::default()
+            },
+            Route::AppRoute { endpoint } => NapiRoute {
+                pathname,
+                r#type: "app-route",
+                endpoint: convert_endpoint(endpoint.clone()),
+                ..Default::default()
+            },
+            Route::Conflict => NapiRoute {
+                pathname,
+                r#type: "conflict",
+                ..Default::default()
+            },
+        }
+    }
+}
+
 #[napi(ts_return_type = "{ __napiType: \"RootTask\" }")]
 pub fn project_routes_subscribe(
     #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<VcArc<ProjectVc>>,
@@ -98,36 +163,42 @@ pub fn project_routes_subscribe(
     let project = project.vc;
     let options: RoutesOptions = options.into();
     subscribe(
-        turbo_tasks,
+        turbo_tasks.clone(),
         func,
         move || {
             let options = options.clone();
             async move {
                 let routes = project.routes(options).strongly_consistent().await?;
-                Ok(routes)
+                Ok(routes
+                    .iter()
+                    .map(|(pathname, route)| async move { Ok((pathname.clone(), route.await?)) })
+                    .try_join()
+                    .await?)
             }
         },
-        |ctx| {
+        move |ctx| {
             let routes = ctx.value;
-
-            Ok(vec![format!("{:?}", routes)])
+            Ok(vec![routes
+                .into_iter()
+                .map(|(pathname, route)| NapiRoute::from_route(pathname, &route, &turbo_tasks))
+                .collect::<Vec<_>>()])
         },
     )
 }
 
 #[napi(object)]
-struct NapiWrittenEndpoint {
+pub struct NapiWrittenEndpoint {
     pub server_entry_path: String,
     pub server_paths: Vec<String>,
     pub client_paths: Vec<String>,
 }
 
-impl From<WrittenEndpoint> for NapiWrittenEndpoint {
-    fn from(written_endpoint: WrittenEndpoint) -> Self {
+impl From<&WrittenEndpoint> for NapiWrittenEndpoint {
+    fn from(written_endpoint: &WrittenEndpoint) -> Self {
         Self {
-            server_entry_path: written_endpoint.server_entry_path,
-            server_paths: written_endpoint.server_paths,
-            client_paths: written_endpoint.client_paths,
+            server_entry_path: written_endpoint.server_entry_path.clone(),
+            server_paths: written_endpoint.server_paths.clone(),
+            client_paths: written_endpoint.client_paths.clone(),
         }
     }
 }
@@ -141,11 +212,11 @@ pub async fn endpoint_write_to_disk(
     let written = turbo_tasks
         .run_once(async move { Ok(endpoint.write_to_disk().strongly_consistent().await?) })
         .await?;
-    Ok(written.into())
+    Ok((&*written).into())
 }
 
 #[napi(ts_return_type = "{ __napiType: \"RootTask\" }")]
-pub async fn endpoint_changed_subscribe(
+pub fn endpoint_changed_subscribe(
     #[napi(ts_arg_type = "{ __napiType: \"Endpoint\" }")] endpoint: External<VcArc<EndpointVc>>,
     func: JsFunction,
 ) -> napi::Result<External<RootTask>> {
@@ -153,17 +224,15 @@ pub async fn endpoint_changed_subscribe(
     let endpoint = endpoint.vc;
     subscribe(
         turbo_tasks,
+        func,
         move || {
             let endpoint = endpoint.clone();
             async move {
-                let changed = endpoint.changed().await?;
-                Ok(changed)
+                endpoint.changed().await?;
+                Ok(())
             }
         },
-        |ctx| {
-            let changed = ctx.value;
-            Ok(vec![])
-        },
+        |_ctx| Ok(vec![()]),
     )
 }
 

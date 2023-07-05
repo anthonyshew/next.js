@@ -18,9 +18,7 @@ pub enum Route {
     AppRoute {
         endpoint: EndpointVc,
     },
-    Conflict {
-        routes: Vec<RouteVc>,
-    },
+    Conflict,
 }
 
 #[turbo_tasks::value_trait]
@@ -33,11 +31,11 @@ pub trait Endpoint {
 #[derive(Debug)]
 pub struct WrittenEndpoint {
     /// Relative to the root_path
-    server_entry_path: String,
+    pub server_entry_path: String,
     /// Relative to the root_path
-    server_paths: Vec<String>,
+    pub server_paths: Vec<String>,
     /// Relative to the root_path
-    client_paths: Vec<String>,
+    pub client_paths: Vec<String>,
 }
 
 /// The routes as map from pathname to route. (pathname includes the leading
