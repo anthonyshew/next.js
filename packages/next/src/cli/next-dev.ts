@@ -298,6 +298,26 @@ const nextDev: CliCommand = async (argv) => {
     // So we need to start with a initial env to know which env vars are coming from the user.
     resetEnv()
     let bindings: any = await loadBindings()
+
+    const project = new bindings.turbo.Project({
+      projectPath: '/workspaces/nextpack/test-app',
+      rootPath: '/workspaces/nextpack/test-app',
+      watch: true,
+    })
+    const iter = project.routesSubscribe({
+      pageExtensions: ['tsx', 'ts', 'jsx', 'js', 'mdx', 'md'],
+    })
+    while (true) {
+      try {
+        for await (const routes of iter) {
+          console.log(routes)
+        }
+      } catch (e) {
+        console.error(e)
+      }
+    }
+    process.exit()
+
     let server = bindings.turbo.startDev({
       ...devServerOptions,
       showAll: args['--show-all'] ?? false,
