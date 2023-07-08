@@ -220,6 +220,7 @@ function logLoadFailure(attempts: any, triedWasm = false) {
 }
 
 interface RoutesOptions {
+  /** File extensions to scan inside our project */
   pageExtensions: string[]
 }
 
@@ -253,18 +254,20 @@ type Route =
     }
 
 interface Endpoint {
-  /// Write files for the endpoint to disk.
+  /** Write files for the endpoint to disk. */
   writeToDisk(): Promise<WrittenEndpoint>
-  /// Listen to changes to the endpoint.
-  /// After changed() has been awaited it will listen to changes.
-  /// The async iterator will yield for each change.
+  /**
+   * Listen to changes to the endpoint.
+   * After changed() has been awaited it will listen to changes.
+   * The async iterator will yield for each change.
+   */
   changed(): Promise<AsyncIterableIterator<void>>
 }
 
 interface WrittenEndpoint {
-  /// The entry path for the endpoint.
+  /** The entry path for the endpoint. */
   entryPath: string
-  /// All paths that has been written for the endpoint.
+  /** All paths that has been written for the endpoint. */
   paths: string[]
 }
 
@@ -272,6 +275,7 @@ function bindingToApi(binding: any, wasm: boolean) {
   type NativeFunction<T> = (
     callback: (err: Error, value: T) => void
   ) => Promise<{ __napiType: 'RootTask' }>
+
   /**
    * Utility function to ensure all variants of an enum are handled.
    */
@@ -281,130 +285,66 @@ function bindingToApi(binding: any, wasm: boolean) {
   ): never {
     throw new Error(`Invariant: ${computeMessage(never)}`)
   }
-  /// Calls a native function and streams the result. All values will be preserved, potentially buffered if consumed slower than produced.
-  function stream<T>(
-    nativeFunction: NativeFunction<T>
-  ): AsyncIterableIterator<T> {
-    let fn: NativeFunction<T> | null = nativeFunction
-    let buffer: (
-      | { err: Error; value: undefined }
-      | { err: undefined; value: T }
-    )[] = []
-    let waiting:
-      | {
-          resolve: (value: T) => void
-          reject: (error: Error) => void
-        }
-      | undefined = undefined
-    const callback = (err: Error | undefined, value: T | undefined) => {
-      if (waiting) {
-        let { resolve, reject } = waiting
-        waiting = undefined
-        if (err) {
-          reject(err)
-        } else {
-          resolve(value!)
-        }
-      } else {
-        buffer.push({ err, value } as
-          | { err: Error; value: undefined }
-          | { err: undefined; value: T })
-      }
-    }
-    let task: { __napiType: 'RootTask' } | null
-    const end = async () => {
-      fn = null
-      binding.rootTaskDispose(task)
-      task = null
-      return { done: true as const, value: undefined }
-    }
-    return {
-      next: async () => {
-        if (!fn) return { done: true, value: undefined }
-        if (!task) task = await fn(callback)
-        if (buffer.length > 0) {
-          let item = buffer.shift()!
-          if (item.err) throw item.err
-          return { done: false, value: item.value }
-        }
-        if (waiting) throw new Error('next() must not be called concurrently')
-        const value = await new Promise<T>((resolve, reject) => {
-          waiting = { resolve, reject }
-        })
-        return {
-          done: false,
-          value,
-        }
-      },
-      return: end,
-      throw: end,
-      [Symbol.asyncIterator]() {
-        return this
-      },
-    }
-  }
-  /// Calls a native function and subscribes to the result. Only the latest value will be preserved.
+
+  /**
+   * Calls a native function and streams the result.
+   * If useBuffer is true, all values will be preserved, potentially buffered
+   * if consumed slower than produced. Else, only the latest value will be
+   * preserved.
+   */
   function subscribe<T>(
+    useBuffer: boolean,
     nativeFunction: NativeFunction<T>
   ): AsyncIterableIterator<T> {
-    let fn: NativeFunction<T> | null = nativeFunction
-    let current:
+    type BufferItem =
       | { err: Error; value: undefined }
       | { err: undefined; value: T }
-      | undefined
+    // A buffer of produced items. This will only contain values if the
+    // consumer is slower than the producer.
+    let buffer: BufferItem[] = []
+    // A deferred value waiting for the next produced item. This will only
+    // exist if the consumer is faster than the producer.
     let waiting:
       | {
           resolve: (value: T) => void
           reject: (error: Error) => void
         }
       | undefined
-    const callback = (err: Error | undefined, value: T | undefined) => {
+
+    // The native function will call this every time it emits a new result. We
+    // either need to notify a waiting consumer, or buffer the new result until
+    // the consumer catches up.
+    const emitResult = (err: Error | undefined, value: T | undefined) => {
       if (waiting) {
         let { resolve, reject } = waiting
         waiting = undefined
-        if (err) {
-          reject(err)
-        } else {
-          resolve(value!)
-        }
+        if (err) reject(err)
+        else resolve(value!)
       } else {
-        current = { err, value } as
-          | { err: Error; value: undefined }
-          | { err: undefined; value: T }
+        const item = { err, value } as BufferItem
+        if (useBuffer) buffer.push(item)
+        else buffer[0] = item
       }
     }
-    let task: { __napiType: 'RootTask' } | null
-    const end = async () => {
-      fn = null
-      binding.rootTaskDispose(task)
-      task = null
-      return { done: true as const, value: undefined }
-    }
-    return {
-      next: async () => {
-        if (!fn) return { done: true, value: undefined }
-        if (!task) task = await fn(callback)
-        if (current) {
-          const cur = current
-          current = undefined
-          if (cur.err) throw cur.err
-          return { done: false, value: cur.value }
+
+    return (async function* () {
+      const task = await nativeFunction(emitResult)
+      try {
+        while (true) {
+          if (buffer.length > 0) {
+            const item = buffer.shift()!
+            if (item.err) throw item.err
+            yield item.value
+          } else {
+            yield new Promise<T>((resolve, reject) => {
+              waiting = { resolve, reject }
+            })
+          }
         }
-        if (waiting) throw new Error('next() must not be called concurrently')
-        const value = await new Promise<T>((resolve, reject) => {
-          waiting = { resolve, reject }
-        })
-        return {
-          done: false,
-          value,
-        }
-      },
-      return: end,
-      throw: end,
-      [Symbol.asyncIterator]() {
-        return this
-      },
-    }
+      } finally {
+        binding.rootTaskDispose(task)
+      }
+    })()
   }
 
   class ProjectImpl implements Project {
@@ -443,7 +383,7 @@ function bindingToApi(binding: any, wasm: boolean) {
           }
       )
 
-      const subscription = subscribe<NapiRoute[]>(async (callback) =>
+      const subscription = subscribe<NapiRoute[]>(false, async (callback) =>
         binding.projectRoutesSubscribe(
           await this._nativeProject,
           options,
@@ -514,7 +454,7 @@ function bindingToApi(binding: any, wasm: boolean) {
     }
 
     async changed(): Promise<AsyncIterableIterator<void>> {
-      const iter = subscribe<void>(async (callback) =>
+      const iter = subscribe<void>(false, async (callback) =>
         binding.endpointChangedSubscribe(await this._nativeEndpoint, callback)
       )
       await iter.next()

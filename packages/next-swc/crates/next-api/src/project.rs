@@ -15,20 +15,31 @@ use crate::{app::app_entry_point_to_route, route::RoutesVc};
 #[derive(Serialize, Deserialize, Clone, TaskInput)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectOptions {
+    /// A root path from which all files must be nested under. Trying to access
+    /// a file outside this root will fail. Think of this as a chroot.
     pub root_path: String,
+
+    /// A path inside the root_path which contains the app/pages directories.
     pub project_path: String,
+
+    /// Whether to watch he filesystem for file changes.
     pub watch: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, TaskInput)]
 #[serde(rename_all = "camelCase")]
 pub struct RoutesOptions {
+    /// File extensions to scan inside our project
     pub page_extensions: Vec<String>,
 }
 
 #[turbo_tasks::value]
 pub struct Project {
+    /// A root path from which all files must be nested under. Trying to access
+    /// a file outside this root will fail. Think of this as a chroot.
     root_path: FileSystemPathVc,
+
+    /// A path inside the root_path which contains the app/pages directories.
     project_path: FileSystemPathVc,
 }
 
@@ -46,7 +57,7 @@ impl ProjectVc {
             .strip_prefix(MAIN_SEPARATOR)
             .unwrap_or(project_relative)
             .replace(MAIN_SEPARATOR, "/");
-        let project_path = fs.root().join(&project_relative);
+        let project_path = root.join(&project_relative);
         Ok(Project {
             root_path: root.resolve().await?,
             project_path: project_path.resolve().await?,
@@ -54,6 +65,8 @@ impl ProjectVc {
         .cell())
     }
 
+    /// Scans the app/pages directories for entry points files (matching the
+    /// provided page_extensions).
     #[turbo_tasks::function]
     pub async fn routes(self, options: RoutesOptions) -> Result<RoutesVc> {
         let RoutesOptions { page_extensions } = options;
@@ -69,8 +82,10 @@ impl ProjectVc {
         Ok(RoutesVc::cell(result))
     }
 
+    /// Emits opaque HMR events whenever a change is detected in the chunk group
+    /// internally known as `identifier`.
     #[turbo_tasks::function]
-    pub fn hmr_events(self, identifier: String, sender: TransientValue<()>) -> NothingVc {
+    pub fn hmr_events(self, _identifier: String, _sender: TransientValue<()>) -> NothingVc {
         NothingVc::new()
     }
 }

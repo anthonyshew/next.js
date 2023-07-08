@@ -17,6 +17,8 @@ use turbopack_binding::{
 
 use crate::register;
 
+/// A helper type to hold both a Vc operation and the TurboTasks root process.
+/// Without this, we'd need to pass both individually all over the place
 pub struct VcArc<T> {
     turbo_tasks: Arc<TurboTasks<MemoryBackend>>,
     /// The Vc. Must be resolved, otherwise you are referencing an inactive
@@ -24,6 +26,7 @@ pub struct VcArc<T> {
     vc: T,
 }
 
+/// The root of our turbopack computation.
 pub struct RootTask {
     turbo_tasks: Arc<TurboTasks<MemoryBackend>>,
     task_id: TaskId,
@@ -37,9 +40,17 @@ impl Drop for RootTask {
 
 #[napi(object)]
 pub struct NapiProjectOptions {
+    /// A root path from which all files must be nested under. Trying to access
+    /// a file outside this root will fail. Think of this as a chroot.
     pub root_path: String,
+
+    /// A path inside the root_path which contains the app/pages directories.
     pub project_path: String,
+
+    /// Whether to watch he filesystem for file changes.
     pub watch: bool,
+
+    /// An upper bound of memory that turbopack will attempt to stay under.
     pub memory_limit: Option<f64>,
 }
 
@@ -55,6 +66,7 @@ impl Into<ProjectOptions> for NapiProjectOptions {
 
 #[napi(object)]
 pub struct NapiRoutesOptions {
+    /// File extensions to scan inside our project
     pub page_extensions: Vec<String>,
 }
 
@@ -91,8 +103,13 @@ pub async fn project_new(options: NapiProjectOptions) -> napi::Result<External<V
 #[napi(object)]
 #[derive(Default)]
 struct NapiRoute {
+    /// The relative path from project_path to the route file
     pub pathname: String,
+
+    /// The type of route, eg a Page or App
     pub r#type: &'static str,
+
+    // Different representations of the endpoint
     pub endpoint: Option<External<VcArc<EndpointVc>>>,
     pub html_endpoint: Option<External<VcArc<EndpointVc>>>,
     pub rsc_endpoint: Option<External<VcArc<EndpointVc>>>,
