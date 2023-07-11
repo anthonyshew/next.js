@@ -3,6 +3,7 @@ use indexmap::IndexMap;
 use turbo_tasks::CompletionVc;
 
 #[turbo_tasks::value(shared)]
+#[derive(Copy, Clone, Debug)]
 pub enum Route {
     Page {
         html_endpoint: EndpointVc,
@@ -41,4 +42,4 @@ pub struct WrittenEndpoint {
 /// The routes as map from pathname to route. (pathname includes the leading
 /// slash)
 #[turbo_tasks::value(transparent)]
-pub struct Routes(IndexMap<String, RouteVc>);
+pub struct Routes(IndexMap<String, Route>);

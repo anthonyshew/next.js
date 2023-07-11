@@ -8,9 +8,9 @@ use napi::{
 };
 use next_api::{
     project::{ProjectOptions, ProjectVc, RoutesOptions},
-    route::{Endpoint, EndpointVc, Route, RouteReadRef, WrittenEndpoint},
+    route::{Endpoint, EndpointVc, Route, WrittenEndpoint},
 };
-use turbo_tasks::{NothingVc, TaskId, TryJoinIterExt, TurboTasks};
+use turbo_tasks::{NothingVc, TaskId, TurboTasks};
 use turbopack_binding::{
     turbo::tasks_memory::MemoryBackend, turbopack::core::error::PrettyPrintError,
 };
@@ -119,7 +119,7 @@ struct NapiRoute {
 impl NapiRoute {
     fn from_route(
         pathname: String,
-        value: &RouteReadRef,
+        value: Route,
         turbo_tasks: &Arc<TurboTasks<MemoryBackend>>,
     ) -> Self {
         let convert_endpoint = |endpoint: EndpointVc| {
@@ -128,7 +128,7 @@ impl NapiRoute {
                 vc: endpoint,
             }))
         };
-        match &**value {
+        match value {
             Route::Page {
                 html_endpoint,
                 data_endpoint,
@@ -188,16 +188,15 @@ pub fn project_routes_subscribe(
                 let routes = project.routes(options).strongly_consistent().await?;
                 Ok(routes
                     .iter()
-                    .map(|(pathname, route)| async move { Ok((pathname.clone(), route.await?)) })
-                    .try_join()
-                    .await?)
+                    .map(|(k, &v)| (k.clone(), v))
+                    .collect::<Vec<_>>())
             }
         },
         move |ctx| {
             let routes = ctx.value;
             Ok(vec![routes
                 .into_iter()
-                .map(|(pathname, route)| NapiRoute::from_route(pathname, &route, &turbo_tasks))
+                .map(|(pathname, route)| NapiRoute::from_route(pathname, route, &turbo_tasks))
                 .collect::<Vec<_>>()])
         },
     )

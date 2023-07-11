@@ -367,7 +367,8 @@ async fn source(
         client_compile_time_info.environment(),
         mode,
     );
-    let pages_structure = find_pages_structure(project_path, dev_server_root, next_config);
+    let pages_structure =
+        find_pages_structure(project_path, dev_server_root, next_config.page_extensions());
     let page_source = create_page_source(
         pages_structure,
         project_path,

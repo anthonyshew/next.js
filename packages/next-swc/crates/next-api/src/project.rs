@@ -1,16 +1,25 @@
 use std::path::MAIN_SEPARATOR;
 
 use anyhow::Result;
-use indexmap::IndexMap;
-use next_core::app_structure::{find_app_dir, get_entrypoints};
+use indexmap::{map::Entry, IndexMap};
+use next_core::{
+    app_structure::{find_app_dir, get_entrypoints},
+    pages_structure::find_pages_structure,
+};
 use serde::{Deserialize, Serialize};
-use turbo_tasks::{primitives::StringsVc, NothingVc, TaskInput, TransientValue};
+use turbo_tasks::{primitives::StringsVc, NothingVc, TaskInput, TransientValue, TryJoinIterExt};
 use turbopack_binding::{
-    turbo::tasks_fs::{DiskFileSystemVc, FileSystem, FileSystemPathVc, FileSystemVc},
+    turbo::tasks_fs::{
+        DiskFileSystemVc, FileSystem, FileSystemPathVc, FileSystemVc, VirtualFileSystemVc,
+    },
     turbopack::core::PROJECT_FILESYSTEM_NAME,
 };
 
-use crate::{app::app_entry_point_to_route, route::RoutesVc};
+use crate::{
+    app::app_entry_point_to_route,
+    pages::get_pages_routes,
+    route::{Route, RoutesVc},
+};
 
 #[derive(Serialize, Deserialize, Clone, TaskInput)]
 #[serde(rename_all = "camelCase")]
@@ -75,8 +84,32 @@ impl ProjectVc {
         let mut result = IndexMap::new();
         if let Some(app_dir) = *find_app_dir(this.project_path).await? {
             let app_entrypoints = get_entrypoints(app_dir, page_extensions);
-            for (pathname, app_entrypoint) in app_entrypoints.await?.iter() {
-                result.insert(pathname.clone(), app_entry_point_to_route(*app_entrypoint));
+            result.extend(
+                app_entrypoints
+                    .await?
+                    .iter()
+                    .map(|(pathname, app_entrypoint)| async {
+                        Ok((
+                            pathname.clone(),
+                            *app_entry_point_to_route(*app_entrypoint).await?,
+                        ))
+                    })
+                    .try_join()
+                    .await?,
+            );
+        }
+        let next_router_fs = VirtualFileSystemVc::new().as_file_system();
+        let next_router_root = next_router_fs.root();
+        let page_structure =
+            find_pages_structure(this.project_path, next_router_root, page_extensions);
+        for (pathname, page_route) in get_pages_routes(page_structure).await?.iter() {
+            match result.entry(pathname.clone()) {
+                Entry::Occupied(mut entry) => {
+                    *entry.get_mut() = Route::Conflict;
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(*page_route);
+                }
             }
         }
         Ok(RoutesVc::cell(result))
