@@ -9,7 +9,6 @@ import { eventSwcLoadFailure } from '../../telemetry/events/swc-load-failure'
 import { patchIncorrectLockfile } from '../../lib/patch-incorrect-lockfile'
 import { downloadWasmSwc } from '../../lib/download-wasm-swc'
 import { spawn } from 'child_process'
-import { string } from 'zod'
 
 const nextVersion = process.env.__NEXT_VERSION as string
 
@@ -81,7 +80,38 @@ let swcHeapProfilerFlushGuard: any
 let swcCrashReporterFlushGuard: any
 export const lockfilePatchPromise: { cur?: Promise<void> } = {}
 
-export async function loadBindings(): Promise<any> {
+export interface Binding {
+  isWasm: boolean
+  turbo: {
+    startDev: any
+    startTrace: any
+    nextBuild?: any
+    createTurboTasks?: any
+    entrypoints: {
+      stream: any
+      get: any
+    }
+    mdx: {
+      compile: any
+      compileSync: any
+    }
+    createProject: (options: ProjectOptions) => Promise<Project>
+  }
+  minify: any
+  minifySync: any
+  transform: any
+  transformSync: any
+  parse: any
+  parseSync: any
+  getTargetTriple(): string | undefined
+  initCustomTraceSubscriber?: any
+  teardownTraceSubscriber?: any
+  initHeapProfiler?: any
+  teardownHeapProfiler?: any
+  teardownCrashReporter?: any
+}
+
+export async function loadBindings(): Promise<Binding> {
   if (pendingBindings) {
     return pendingBindings
   }
@@ -217,6 +247,29 @@ function logLoadFailure(attempts: any, triedWasm = false) {
       )
       process.exit(1)
     })
+}
+
+interface ProjectOptions {
+  /**
+   * A root path from which all files must be nested under. Trying to access
+   * a file outside this root will fail. Think of this as a chroot.
+   */
+  rootPath: string
+
+  /**
+   * A path inside the root_path which contains the app/pages directories.
+   */
+  projectPath: string
+
+  /**
+   * Whether to watch he filesystem for file changes.
+   */
+  watch: boolean
+
+  /**
+   * An upper bound of memory that turbopack will attempt to stay under.
+   */
+  memoryLimit?: number
 }
 
 interface RoutesOptions {
@@ -549,9 +602,6 @@ async function loadWasm(importPath = '', isCustomTurbopack: boolean) {
           startTrace: () => {
             Log.error('Wasm binding does not support trace yet')
           },
-          experimentalTurbo: () => {
-            Log.error('Wasm binding does not support this interface')
-          },
           entrypoints: {
             stream: (
               turboTasks: any,
@@ -809,12 +859,6 @@ function loadNative(isCustomTurbopack = false) {
             toBuffer({ exact: true, ...options }),
             turboTasks
           )
-          return ret
-        },
-        experimentalTurbo: () => {
-          initHeapProfiler()
-
-          const ret = bindings.experimentalTurbo()
           return ret
         },
         createTurboTasks: (memoryLimit?: number): unknown =>

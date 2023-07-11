@@ -297,7 +297,7 @@ const nextDev: CliCommand = async (argv) => {
     // Turbopack need to be in control over reading the .env files and watching them.
     // So we need to start with a initial env to know which env vars are coming from the user.
     resetEnv()
-    let bindings: any = await loadBindings()
+    let bindings = await loadBindings()
 
     const project = await bindings.turbo.createProject({
       projectPath: '/workspaces/nextpack/test-app',
