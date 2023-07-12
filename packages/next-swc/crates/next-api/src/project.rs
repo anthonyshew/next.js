@@ -5,9 +5,13 @@ use indexmap::{map::Entry, IndexMap};
 use next_core::{
     app_structure::{find_app_dir, get_entrypoints},
     pages_structure::find_pages_structure,
+    util::NextSourceConfig,
 };
 use serde::{Deserialize, Serialize};
-use turbo_tasks::{primitives::StringsVc, NothingVc, TaskInput, TransientValue, TryJoinIterExt};
+use turbo_tasks::{
+    debug::ValueDebugFormat, primitives::StringsVc, trace::TraceRawVcs, NothingVc, TaskInput,
+    TransientValue, TryJoinIterExt,
+};
 use turbopack_binding::{
     turbo::tasks_fs::{
         DiskFileSystemVc, FileSystem, FileSystemPathVc, FileSystemVc, VirtualFileSystemVc,
@@ -18,7 +22,7 @@ use turbopack_binding::{
 use crate::{
     app::app_entry_point_to_route,
     pages::get_pages_routes,
-    route::{Route, RoutesVc},
+    route::{EndpointVc, Route},
 };
 
 #[derive(Serialize, Deserialize, Clone, TaskInput)]
@@ -36,10 +40,21 @@ pub struct ProjectOptions {
 }
 
 #[derive(Serialize, Deserialize, Clone, TaskInput)]
-#[serde(rename_all = "camelCase")]
-pub struct RoutesOptions {
+pub struct EntrypointsOptions {
     /// File extensions to scan inside our project
     pub page_extensions: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, TraceRawVcs, PartialEq, Eq, ValueDebugFormat)]
+pub struct Middleware {
+    pub endpoint: EndpointVc,
+    pub config: NextSourceConfig,
+}
+
+#[turbo_tasks::value]
+pub struct Entrypoints {
+    pub routes: IndexMap<String, Route>,
+    pub middleware: Option<Middleware>,
 }
 
 #[turbo_tasks::value]
@@ -77,14 +92,14 @@ impl ProjectVc {
     /// Scans the app/pages directories for entry points files (matching the
     /// provided page_extensions).
     #[turbo_tasks::function]
-    pub async fn routes(self, options: RoutesOptions) -> Result<RoutesVc> {
-        let RoutesOptions { page_extensions } = options;
+    pub async fn entrypoints(self, options: EntrypointsOptions) -> Result<EntrypointsVc> {
+        let EntrypointsOptions { page_extensions } = options;
         let page_extensions = StringsVc::cell(page_extensions);
         let this = self.await?;
-        let mut result = IndexMap::new();
+        let mut routes = IndexMap::new();
         if let Some(app_dir) = *find_app_dir(this.project_path).await? {
             let app_entrypoints = get_entrypoints(app_dir, page_extensions);
-            result.extend(
+            routes.extend(
                 app_entrypoints
                     .await?
                     .iter()
@@ -103,7 +118,7 @@ impl ProjectVc {
         let page_structure =
             find_pages_structure(this.project_path, next_router_root, page_extensions);
         for (pathname, page_route) in get_pages_routes(page_structure).await?.iter() {
-            match result.entry(pathname.clone()) {
+            match routes.entry(pathname.clone()) {
                 Entry::Occupied(mut entry) => {
                     *entry.get_mut() = Route::Conflict;
                 }
@@ -112,7 +127,12 @@ impl ProjectVc {
                 }
             }
         }
-        Ok(RoutesVc::cell(result))
+        // TODO middleware
+        Ok(Entrypoints {
+            routes,
+            middleware: None,
+        }
+        .cell())
     }
 
     /// Emits opaque HMR events whenever a change is detected in the chunk group

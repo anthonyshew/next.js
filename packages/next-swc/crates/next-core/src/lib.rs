@@ -41,7 +41,7 @@ mod runtime;
 mod sass;
 mod transform_options;
 pub mod url_node;
-mod util;
+pub mod util;
 mod web_entry_source;
 
 pub use app_source::create_app_source;

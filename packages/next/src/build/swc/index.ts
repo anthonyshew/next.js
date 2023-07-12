@@ -272,15 +272,35 @@ interface ProjectOptions {
   memoryLimit?: number
 }
 
-interface RoutesOptions {
+interface EntrypointsOptions {
   /** File extensions to scan inside our project */
   pageExtensions: string[]
 }
 
+interface Issue {}
+
+interface Diagnostics {}
+
+type TurbopackResult<T = {}> = T & {
+  issues: Issue[]
+  diagnostics: Diagnostics[]
+}
+
+interface Middleware {
+  endpoint: Endpoint
+  runtime: 'nodejs' | 'edge'
+  matcher?: string[]
+}
+
+interface Entrypoints {
+  routes: Map<string, Route>
+  middleware?: Middleware
+}
+
 interface Project {
-  routesSubscribe(
-    options: RoutesOptions
-  ): AsyncIterableIterator<Map<String, Route>>
+  entrypointsSubscribe(
+    options: EntrypointsOptions
+  ): AsyncIterableIterator<TurbopackResult<Entrypoints>>
 }
 
 type Route =
@@ -308,13 +328,29 @@ type Route =
 
 interface Endpoint {
   /** Write files for the endpoint to disk. */
-  writeToDisk(): Promise<WrittenEndpoint>
+  writeToDisk(): Promise<TurbopackResult<WrittenEndpoint>>
   /**
    * Listen to changes to the endpoint.
    * After changed() has been awaited it will listen to changes.
    * The async iterator will yield for each change.
    */
-  changed(): Promise<AsyncIterableIterator<void>>
+  changed(): Promise<AsyncIterableIterator<TurbopackResult>>
+}
+
+interface EndpointConfig {
+  dynamic?: 'auto' | 'force-dynamic' | 'error' | 'force-static'
+  dynamicParams?: boolean
+  revalidate?: 'never' | 'force-cache' | number
+  fetchCache?:
+    | 'auto'
+    | 'default-cache'
+    | 'only-cache'
+    | 'force-cache'
+    | 'default-no-store'
+    | 'only-no-store'
+    | 'force-no-store'
+  runtime?: 'nodejs' | 'edge'
+  preferredRegion?: string
 }
 
 interface WrittenEndpoint {
@@ -322,6 +358,7 @@ interface WrittenEndpoint {
   entryPath: string
   /** All paths that has been written for the endpoint. */
   paths: string[]
+  config: EndpointConfig
 }
 
 function bindingToApi(binding: any, wasm: boolean) {
@@ -389,6 +426,7 @@ function bindingToApi(binding: any, wasm: boolean) {
             if (item.err) throw item.err
             yield item.value
           } else {
+            // eslint-disable-next-line no-loop-func
             yield new Promise<T>((resolve, reject) => {
               waiting = { resolve, reject }
             })
@@ -407,8 +445,21 @@ function bindingToApi(binding: any, wasm: boolean) {
       this._nativeProject = nativeProject
     }
 
-    routesSubscribe(options: RoutesOptions) {
+    entrypointsSubscribe(options: EntrypointsOptions) {
       type NapiEndpoint = { __napiType: 'Endpoint' }
+
+      type NapiEntrypoints = {
+        routes: NapiRoute[]
+        middleware?: NapiMiddleware
+        issues: Issue[]
+        diagnostics: Diagnostics[]
+      }
+
+      type NapiMiddleware = {
+        endpoint: NapiEndpoint
+        runtime: 'nodejs' | 'edge'
+        matcher?: string[]
+      }
 
       type NapiRoute = {
         pathname: string
@@ -436,7 +487,7 @@ function bindingToApi(binding: any, wasm: boolean) {
           }
       )
 
-      const subscription = subscribe<NapiRoute[]>(false, async (callback) =>
+      const subscription = subscribe<NapiEntrypoints>(false, async (callback) =>
         binding.projectRoutesSubscribe(
           await this._nativeProject,
           options,
@@ -444,9 +495,9 @@ function bindingToApi(binding: any, wasm: boolean) {
         )
       )
       return (async function* () {
-        for await (const routes of subscription) {
-          const map = new Map()
-          for (const { pathname, ...nativeRoute } of routes) {
+        for await (const entrypoints of subscription) {
+          const routes = new Map()
+          for (const { pathname, ...nativeRoute } of entrypoints.routes) {
             let route: Route
             switch (nativeRoute.type) {
               case 'page':
@@ -487,9 +538,22 @@ function bindingToApi(binding: any, wasm: boolean) {
                 )
                 break
             }
-            map.set(pathname, route)
+            routes.set(pathname, route)
           }
-          yield map
+          const napiMiddlewareToMiddleware = (middleware: NapiMiddleware) => ({
+            endpoint: new EndpointImpl(middleware.endpoint),
+            runtime: middleware.runtime,
+            matcher: middleware.matcher,
+          })
+          const middleware = entrypoints.middleware
+            ? napiMiddlewareToMiddleware(entrypoints.middleware)
+            : undefined
+          yield {
+            routes,
+            middleware,
+            issues: entrypoints.issues,
+            diagnostics: entrypoints.diagnostics,
+          }
         }
       })()
     }
@@ -502,12 +566,17 @@ function bindingToApi(binding: any, wasm: boolean) {
       this._nativeEndpoint = nativeEndpoint
     }
 
-    async writeToDisk(): Promise<any> {
-      return await binding.endpointWriteToDisk(this._nativeEndpoint)
+    async writeToDisk(): Promise<TurbopackResult<WrittenEndpoint>> {
+      const result = await binding.endpointWriteToDisk(this._nativeEndpoint)
+      return {
+        ...result.result,
+        issues: result.issues,
+        diagnostics: result.diagnostics,
+      }
     }
 
-    async changed(): Promise<AsyncIterableIterator<void>> {
-      const iter = subscribe<void>(false, async (callback) =>
+    async changed(): Promise<AsyncIterableIterator<TurbopackResult>> {
+      const iter = subscribe<TurbopackResult>(false, async (callback) =>
         binding.endpointChangedSubscribe(await this._nativeEndpoint, callback)
       )
       await iter.next()
