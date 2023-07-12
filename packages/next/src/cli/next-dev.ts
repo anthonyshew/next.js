@@ -310,7 +310,16 @@ const nextDev: CliCommand = async (argv) => {
     while (true) {
       try {
         for await (const entrypoints of iter) {
-          console.log(entrypoints)
+          for (const [pathname, route] of entrypoints.routes) {
+            switch (route.type) {
+              case 'page': {
+                console.log(`Writing ${pathname} to disk`)
+                const written = await route.htmlEndpoint.writeToDisk()
+                console.log(written)
+                break
+              }
+            }
+          }
         }
       } catch (e) {
         console.error(e)
