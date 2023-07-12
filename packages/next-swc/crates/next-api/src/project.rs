@@ -25,7 +25,7 @@ use crate::{
     route::{EndpointVc, Route},
 };
 
-#[derive(Serialize, Deserialize, Clone, TaskInput)]
+#[derive(Debug, Serialize, Deserialize, Clone, TaskInput)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectOptions {
     /// A root path from which all files must be nested under. Trying to access

@@ -488,7 +488,7 @@ function bindingToApi(binding: any, wasm: boolean) {
       )
 
       const subscription = subscribe<NapiEntrypoints>(false, async (callback) =>
-        binding.projectRoutesSubscribe(
+        binding.projectEntrypointsSubscribe(
           await this._nativeProject,
           options,
           callback

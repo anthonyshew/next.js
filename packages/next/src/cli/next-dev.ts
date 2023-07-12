@@ -300,17 +300,17 @@ const nextDev: CliCommand = async (argv) => {
     let bindings = await loadBindings()
 
     const project = await bindings.turbo.createProject({
-      projectPath: '/workspaces/nextpack/test-app',
-      rootPath: '/workspaces/nextpack/test-app',
+      projectPath: dir,
+      rootPath: dir,
       watch: true,
     })
-    const iter = project.routesSubscribe({
+    const iter = project.entrypointsSubscribe({
       pageExtensions: ['tsx', 'ts', 'jsx', 'js', 'mdx', 'md'],
     })
     while (true) {
       try {
-        for await (const routes of iter) {
-          console.log(routes)
+        for await (const entrypoints of iter) {
+          console.log(entrypoints)
         }
       } catch (e) {
         console.error(e)
